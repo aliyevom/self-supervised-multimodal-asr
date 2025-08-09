@@ -1,0 +1,53 @@
+data:
+  librispeech:
+    train_clean_100: true
+    train_clean_360: true
+    sampling_rate: 16000
+    max_duration: 30.0
+  context:
+    clip_duration: 5.0
+    sampling_rate: 16000
+    mask_ratio: 0.15
+    mask_length: 10
+
+model:
+  asr:
+    type: "wav2vec2"  # or "whisper"
+    pretrained: "facebook/wav2vec2-base"
+    freeze_encoder: true
+  
+  context_encoder:
+    input_channels: 1  # mono audio
+    hidden_dim: 256
+    num_layers: 4
+    kernel_size: 3
+    stride: 2
+    context_dim: 512
+    
+  fusion:
+    hidden_dim: 256
+    num_layers: 2
+    dropout: 0.1
+
+training:
+  context_encoder:
+    batch_size: 32
+    learning_rate: 1e-4
+    num_epochs: 50
+    warmup_steps: 1000
+    gradient_clip: 1.0
+    
+  fusion:
+    batch_size: 16
+    learning_rate: 5e-5
+    num_epochs: 30
+    warmup_steps: 500
+    gradient_clip: 1.0
+
+evaluation:
+  batch_size: 16
+  noise_levels: [0.0, 0.1, 0.2, 0.5]
+  metrics:
+    - wer
+    - latency
+    - memory_usage
