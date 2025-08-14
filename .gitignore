@@ -42,3 +42,5 @@ evaluation_results/
 # Logs
 *.log
 .DS_Store
+
+tmp.txt

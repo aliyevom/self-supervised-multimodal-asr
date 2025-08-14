@@ -1,37 +1,53 @@
+from torch import nn, Tensor
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple, Optional
+from einops import rearrange, repeat
 
-class ConvBlock(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        stride: int,
-        padding: Optional[int] = None,
-    ):
+class MultiHeadAttention(nn.Module):
+    def __init__(self, dim: int, heads: int = 8, dropout: float = 0.1):
         super().__init__()
-        if padding is None:
-            padding = kernel_size // 2
-            
-        self.conv = nn.Conv1d(
-            in_channels,
-            out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-        )
-        self.bn = nn.BatchNorm1d(out_channels)
+        self.heads = heads
+        self.scale = (dim // heads) ** -0.5
+        
+        self.to_qkv = nn.Linear(dim, dim * 3)
+        self.to_out = nn.Linear(dim, dim)
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, x: Tensor) -> Tensor:
+        qkv = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.heads), qkv)
+        
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+        attn = F.softmax(dots, dim=-1)
+        attn = self.dropout(attn)
+        
+        out = torch.matmul(attn, v)
+        out = rearrange(out, 'b h n d -> b n (h d)')
+        return self.to_out(out)
+
+class ResidualBlock(nn.Module):
+    def __init__(self, channels: int, kernel_size: int):
+        super().__init__()
+        padding = kernel_size // 2
+        
+        self.conv1 = nn.Conv1d(channels, channels, kernel_size, padding=padding)
+        self.conv2 = nn.Conv1d(channels, channels, kernel_size, padding=padding)
+        self.norm1 = nn.BatchNorm1d(channels)
+        self.norm2 = nn.BatchNorm1d(channels)
         self.activation = nn.GELU()
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.activation(self.bn(self.conv(x)))
+    def forward(self, x: Tensor) -> Tensor:
+        residual = x
+        x = self.conv1(x)
+        x = self.norm1(x)
+        x = self.activation(x)
+        x = self.conv2(x)
+        x = self.norm2(x)
+        x = x + residual
+        return self.activation(x)
 
 class ContextEncoder(nn.Module):
-    """Lightweight encoder for environmental context signals with masked prediction."""
-    
     def __init__(
         self,
         input_channels: int = 1,
@@ -40,94 +56,104 @@ class ContextEncoder(nn.Module):
         kernel_size: int = 3,
         stride: int = 2,
         context_dim: int = 512,
+        num_heads: int = 8,
+        dropout: float = 0.1
     ):
         super().__init__()
         
-        # Convolutional encoder
-        self.encoder_layers = nn.ModuleList()
-        current_channels = input_channels
-        
-        for _ in range(num_layers):
-            self.encoder_layers.append(
-                ConvBlock(
-                    current_channels,
-                    hidden_dim,
-                    kernel_size=kernel_size,
-                    stride=stride,
-                )
-            )
-            current_channels = hidden_dim
-            
-        # Global context projection
-        self.global_pool = nn.AdaptiveAvgPool1d(1)
-        self.context_projection = nn.Sequential(
-            nn.Linear(hidden_dim, context_dim),
-            nn.LayerNorm(context_dim),
-            nn.GELU(),
-            nn.Dropout(0.1),
+        self.input_proj = nn.Sequential(
+            nn.Conv1d(input_channels, hidden_dim, 7, padding=3),
+            nn.BatchNorm1d(hidden_dim),
+            nn.GELU()
         )
         
-        # Decoder for masked prediction
-        self.decoder = nn.Sequential(
-            nn.Linear(context_dim, hidden_dim),
+        self.encoder_blocks = nn.ModuleList([
+            nn.Sequential(
+                ResidualBlock(hidden_dim, kernel_size),
+                nn.Conv1d(hidden_dim, hidden_dim, stride * 2 + 1, 
+                         stride=stride, padding=stride),
+                nn.BatchNorm1d(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout)
+            ) for _ in range(num_layers)
+        ])
+        
+        reduced_length = 1000  # Approximate sequence length after convolutions
+        self.pos_embedding = nn.Parameter(torch.randn(1, reduced_length, hidden_dim))
+        
+        self.attention = MultiHeadAttention(hidden_dim, num_heads, dropout)
+        self.norm = nn.LayerNorm(hidden_dim)
+        
+        self.context_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 2),
             nn.GELU(),
-            nn.Linear(hidden_dim, input_channels),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 2, context_dim),
+            nn.LayerNorm(context_dim)
         )
         
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """Encode input signal to context vector."""
-        # x shape: (batch_size, channels, time)
-        for layer in self.encoder_layers:
-            x = layer(x)
+        self.mask_token = nn.Parameter(torch.randn(1, 1, hidden_dim))
+        
+    def encode(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+        x = self.input_proj(x)
+        
+        for block in self.encoder_blocks:
+            x = block(x)
             
-        # Global pooling and projection
-        x = self.global_pool(x).squeeze(-1)  # (batch_size, hidden_dim)
-        context = self.context_projection(x)  # (batch_size, context_dim)
+        x = x.transpose(1, 2)
+        x = x + self.pos_embedding[:, :x.size(1)]
+        
+        if mask is not None:
+            mask_tokens = repeat(self.mask_token, '1 1 d -> b n d', 
+                               b=x.size(0), n=x.size(1))
+            x = torch.where(mask.unsqueeze(-1), mask_tokens, x)
+        
+        x = self.attention(x)
+        x = self.norm(x)
+        
+        context = x.mean(dim=1)
+        context = self.context_mlp(context)
         
         return context
         
     def forward(
         self,
-        x: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass with optional masked prediction.
-        
-        Args:
-            x: Input tensor of shape (batch_size, channels, time)
-            mask: Binary mask tensor of shape (batch_size, time)
-            
-        Returns:
-            context: Global context vector
-            reconstruction: Reconstructed input (if mask provided)
-        """
-        context = self.encode(x)
+        x: Tensor,
+        mask: Optional[Tensor] = None
+    ) -> Tuple[Tensor, Optional[Tensor]]:
+        context = self.encode(x, mask)
         
         if mask is not None:
-            # Reconstruct masked portions
-            reconstruction = self.decoder(context).unsqueeze(-1)  # Add time dimension
-            reconstruction = F.interpolate(
-                reconstruction,
-                size=x.shape[-1],
-                mode='linear',
-                align_corners=False
-            )
+            reconstruction = self.decode(context, x.size(-1))
             return context, reconstruction
             
         return context, None
         
+    def decode(self, context: Tensor, length: int) -> Tensor:
+        b = context.size(0)
+        x = repeat(context, 'b d -> b n d', n=length)
+        
+        x = x.transpose(1, 2)
+        x = F.interpolate(x, size=length, mode='linear', align_corners=False)
+        
+        return x
+        
     def compute_loss(
         self,
-        x: torch.Tensor,
-        mask: torch.Tensor,
-    ) -> torch.Tensor:
-        """Compute masked prediction loss."""
+        x: Tensor,
+        mask: Tensor,
+        reduction: str = 'mean'
+    ) -> Tensor:
         _, reconstruction = self.forward(x, mask)
         
-        # Only compute loss on masked portions
-        mask = mask.unsqueeze(1)  # Add channel dimension
+        mask = mask.unsqueeze(1)
         masked_input = x * mask
         masked_reconstruction = reconstruction * mask
         
-        loss = F.mse_loss(masked_reconstruction, masked_input)
+        loss = F.mse_loss(
+            masked_reconstruction,
+            masked_input,
+            reduction=reduction
+        )
+        
         return loss
