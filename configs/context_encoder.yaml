@@ -3,18 +3,30 @@ model:
     input_channels: 1
     hidden_dim: 256
     num_layers: 4
-    kernel_size: 3
-    stride: 2
-    context_dim: 512
-    num_heads: 8
-    dropout: 0.1
+    scales: [1, 2, 4]
+    pyramid_levels: [1, 2, 4, 8]
+    attention:
+      num_heads: 8
+      dropout: 0.1
+    freq_attention:
+      reduction: 8
 
 training:
+  augmentation:
+    noise:
+      noise_types: [gaussian, pink, brown]
+      snr_range: [5, 20]
+    context:
+      mask_ratio: 0.15
+      mask_length: 10
+      time_stretch: [0.9, 1.1]
+      pitch_shift: [-2, 2]
+
   loss:
-    alpha: 0.5
-    beta: 0.1
+    reconstruction_weight: 1.0
+    contrastive_weight: 0.5
+    frequency_weight: 0.1
     temperature: 0.07
-    adaptive_weights: true
     
   optimizer:
     type: AdamW
@@ -22,26 +34,30 @@ training:
     weight_decay: 0.01
     
   scheduler:
-    type: CosineAnnealingLR
-    T_max: 100
-    eta_min: 1e-6
+    type: OneCycleLR
+    max_lr: 1e-3
+    pct_start: 0.3
     
   batch_size: 32
   max_epochs: 100
-  early_stopping:
-    patience: 10
-    min_delta: 1e-4
-    
+  warmup_steps: 1000
   gradient_clip: 1.0
   accumulation_steps: 2
 
 data:
   sampling_rate: 16000
   context_duration: 5.0
-  mask_ratio: 0.15
-  mask_length: 10
-  augmentation:
-    noise_types: [gaussian, pink, brown]
-    snr_range: [5, 20]
-    time_stretch: [0.9, 1.1]
-    pitch_shift: [-2, 2]
+  feature_extraction:
+    n_fft: 400
+    hop_length: 160
+    n_mels: 80
+    normalize: true
+  
+  transforms:
+    spec_augment:
+      freq_mask_param: 27
+      time_mask_param: 100
+    noise_augment:
+      enabled: true
+      types: [babble, cafe, street]
+      snr_range: [0, 15]
