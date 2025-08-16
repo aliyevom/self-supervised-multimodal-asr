@@ -3,6 +3,16 @@
 This repository contains a proof-of-concept multimodal automatic speech recognition (ASR) system.
 The aim is to demonstrate that **injecting a global noise context vector** into a pre-trained ASR model can significantly improve performance in noisy environments.
 
+# Real-time scenario
+
+Consider a voice assistant used in daily life—giving commands while cooking in a noisy kitchen, dictating a message on a busy street, or interacting with a device in a crowded café. Standard ASR pipelines often degrade under these conditions. By injecting learned environmental context, the model can separate relevant speech from ambient noise, making the assistant far more usable across diverse acoustic situations.
+
+* User experience → Enables hands-free interaction that feels seamless even in uncontrolled environments.
+
+* Cross-platform relevance → Applies to mobile devices, smart speakers, in-car systems, and wearable technology.
+
+* Scalable integration → Built to extend existing ASR foundations (wav2vec2, Whisper, RNNT) with minimal re-engineering.
+
 The concept is based on research from [Amazon scientists](https://www.amazon.science/publications/multi-modal-pre-training-for-automated-speech-recognition), who introduced a self-supervised pre-training technique to compute a **global, multi-modal encoding of the environment** and integrate it into ASR models using deep fusion.
 Their experiments on LibriSpeech showed:
 
@@ -15,7 +25,6 @@ This implementation provides a lightweight Python-based version using open-sourc
 *Architecture diagram: self-supervised noise context encoder + deep fusion*
 
 ### Technical Development Plan
-
 ```mermaid
 gantt
   dateFormat  YYYY-MM-DD
