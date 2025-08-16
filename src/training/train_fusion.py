@@ -12,7 +12,13 @@ from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 import numpy as np
 
 from src.models.context_encoder import ContextEncoder
-from src.models.fusion_layer import DeepFusionLayer
+from src.models.fusion_layer import (
+    DeepFusionLayer,
+    AdaptiveGatedFusion,
+    CrossModalAttentionFusion,
+    FiLMFusion,
+    MoEGatedFusion,
+)
 from src.data.dataset import ContextualSpeechDataset
 from src.utils.config import Config, load_config
 from src.utils.logger import ExperimentLogger
@@ -184,14 +190,44 @@ def train(cfg: DictConfig):
     context_encoder.load_state_dict(checkpoint["model_state_dict"])
     context_encoder.eval()
     
-    # Create fusion layer
-    fusion_layer = DeepFusionLayer(
-        asr_hidden_dim=asr_model.config.hidden_size,
-        context_dim=config.model.context_encoder.context_dim,
-        hidden_dim=config.model.fusion.hidden_dim,
-        num_layers=config.model.fusion.num_layers,
-        dropout=config.model.fusion.dropout,
-    )
+    # Create fusion layer according to config
+    fusion_type = getattr(config.model.fusion, 'type', 'deep')
+    if fusion_type == 'deep':
+        fusion_layer = DeepFusionLayer(
+            asr_hidden_dim=asr_model.config.hidden_size,
+            context_dim=config.model.context_encoder.context_dim,
+            hidden_dim=config.model.fusion.hidden_dim,
+            num_layers=config.model.fusion.num_layers,
+            dropout=config.model.fusion.dropout,
+        )
+    elif fusion_type == 'adaptive_gated':
+        fusion_layer = AdaptiveGatedFusion(
+            asr_hidden_dim=asr_model.config.hidden_size,
+            context_dim=config.model.context_encoder.context_dim,
+            dropout=config.model.fusion.dropout,
+        )
+    elif fusion_type == 'cross_modal_attention':
+        fusion_layer = CrossModalAttentionFusion(
+            asr_hidden_dim=asr_model.config.hidden_size,
+            context_dim=config.model.context_encoder.context_dim,
+            num_heads=getattr(config.model.fusion, 'num_heads', 8),
+            dropout=config.model.fusion.dropout,
+        )
+    elif fusion_type == 'film':
+        fusion_layer = FiLMFusion(
+            asr_hidden_dim=asr_model.config.hidden_size,
+            context_dim=config.model.context_encoder.context_dim,
+            dropout=config.model.fusion.dropout,
+        )
+    elif fusion_type == 'moe':
+        fusion_layer = MoEGatedFusion(
+            asr_hidden_dim=asr_model.config.hidden_size,
+            context_dim=config.model.context_encoder.context_dim,
+            num_experts=getattr(config.model.fusion, 'num_experts', 4),
+            dropout=config.model.fusion.dropout,
+        )
+    else:
+        raise ValueError(f"Unsupported fusion type: {fusion_type}")
     
     # Create combined model
     model = ContextEnhancedASR(asr_model, context_encoder, fusion_layer)
