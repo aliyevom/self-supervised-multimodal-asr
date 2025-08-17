@@ -3,6 +3,13 @@
 This repository contains a proof-of-concept multimodal automatic speech recognition (ASR) system.
 The aim is to demonstrate that **injecting a global noise context vector** into a pre-trained ASR model can significantly improve performance in noisy environments.
 
+System, Persistent Volume (Storage), Pods, Deployment, StatefulSet, DaemonSet, Horizontal Pod Autoscaler, JobSet, cAdvisor, Kubelet, NVIDIA Data Center GPU Manager (DCGM)
+
+![Architecture Overview](public/img/delta01.png)
+
+ ### Kubernetes deployment process - dev\uat\prod 
+
+> Deploy the system to Kubernetes as separate services for ASR inference, context encoding, and an API gateway, packaged as containers with GPU support where needed. Use Deployments with Horizontal Pod Autoscaling, node selectors for GPU nodes (NVIDIA/DCGM), and a PersistentVolume for model weights and feature caches. Expose the gateway via Ingress (TLS) supporting gRPC/WebSocket streaming, and implement canary releases by splitting traffic across two Deployments with weighted Services. Instrument the stack with cAdvisor/Prometheus and OpenTelemetry tracing, and use automated rollback NGINX config on failed health checks during progressive rollouts.
 # Real-time scenario
 
 Consider a voice assistant used in daily life—giving commands while cooking in a noisy kitchen, dictating a message on a busy street, or interacting with a device in a crowded café. Standard ASR pipelines often degrade under these conditions. By injecting learned environmental context, the model can separate relevant speech from ambient noise, making the assistant far more usable across diverse acoustic situations.
@@ -102,6 +109,8 @@ gantt
 
 ```
 
+
+
 ## Background
 
 Most end-to-end ASR models focus on **local** speech encoding, which makes them more vulnerable to:
@@ -148,3 +157,5 @@ Full evaluation details can be reproduced using the included scripts.
 * **[LibriSpeech Dataset](https://www.openslr.org/12/)** – Open corpus for ASR training.
 * **[wav2vec 2.0](https://github.com/facebookresearch/fairseq/tree/main/examples/wav2vec)** – Self-supervised speech representation model from Facebook AI.
 * **[Whisper](https://openai.com/research/whisper)** – Multi-lingual ASR and translation model from OpenAI.
+
+
