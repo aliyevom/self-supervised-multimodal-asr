@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package asr.v1;
+
+option java_multiple_files = true;
+option java_package = "com.example.asr.v1";
+option go_package = "github.com/example/asr/protos/asr/v1;asrv1";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "asr/v1/common.proto";
+
+service ContextEncoderService {
+  rpc StreamContext(stream ContextStreamRequest) returns (stream ContextStreamResponse);
+  rpc EncodeContext(EncodeContextRequest) returns (EncodeContextResponse);
+}
+
+message ContextStreamRequest {
+  oneof payload {
+    RuntimeConfig config = 1;
+    ContextChunk chunk = 2;
+  }
+}
+
+message ContextStreamResponse {
+  oneof payload {
+    ProfilingMetrics metrics = 1;
+    ContextVector vector = 2;
+    Status status = 3;
+  }
+}
+
+message EncodeContextRequest {
+  RuntimeConfig config = 1;
+  bytes context_audio = 2;
+}
+
+message EncodeContextResponse {
+  Status status = 1;
+  ContextVector vector = 2;
+}
+
+

@@ -127,6 +127,30 @@ Reported improvements included **6–7% WER gains** on LibriSpeech and up to **4
 
 
 
+## RPC / Protobuf API
+
+Advanced gRPC services are provided to stream speech and context, request batch recognition, and administer the runtime.
+
+- Protos live under `protos/asr/v1`: `common.proto`, `asr_service.proto`, `context_service.proto`, `admin_service.proto`.
+- Python stubs are generated into `src`.
+
+Generate stubs:
+
+```bash
+python scripts/gen_protos.py
+```
+
+Run the demo server:
+
+```bash
+python -m src.rpc.server
+```
+
+Service summary:
+- `ASRService.StreamingRecognize` — full-duplex streaming with optional `ContextChunk` or `ContextVector`.
+- `ContextEncoderService.StreamContext` — stream context audio and receive a final `ContextVector`.
+- `AdminService` — health, config, profiling, and checkpoint loading.
+
 ## Algorithm Approach
 
 This repository follows the same philosophy:

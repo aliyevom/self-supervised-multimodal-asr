@@ -1,0 +1,115 @@
+syntax = "proto3";
+
+package asr.v1;
+
+option java_multiple_files = true;
+option java_package = "com.example.asr.v1";
+option go_package = "github.com/example/asr/protos/asr/v1;asrv1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+
+// Generic status for responses
+message Status {
+  enum Code {
+    CODE_UNSPECIFIED = 0;
+    OK = 1;
+    INVALID_ARGUMENT = 2;
+    NOT_FOUND = 3;
+    FAILED_PRECONDITION = 4;
+    UNAVAILABLE = 5;
+    INTERNAL = 6;
+  }
+  Code code = 1;
+  string message = 2;
+  google.protobuf.Struct details = 3;
+}
+
+// Audio meta-information
+message AudioFormat {
+  int32 sample_rate_hz = 1;     // e.g., 16000
+  int32 num_channels = 2;       // 1=mono, 2=stereo
+  enum Encoding {
+    ENCODING_UNSPECIFIED = 0;
+    PCM16 = 1;                  // signed 16-bit little-endian
+    PCM32F = 2;                 // 32-bit float
+    MULAW = 3;
+  }
+  Encoding encoding = 3;
+}
+
+// Speech audio chunk
+message AudioChunk {
+  bytes data = 1;               // raw samples matching format.encoding
+  int64 sequence = 2;           // monotonic chunk index
+  bool end_of_stream = 3;       // true on the final chunk
+  google.protobuf.Timestamp timestamp = 4; // client-sent time
+}
+
+// Context signal chunk (noise/sensor)
+message ContextChunk {
+  bytes data = 1;
+  int64 sequence = 2;
+  bool end_of_stream = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+// Global context vector produced by the context encoder
+message ContextVector {
+  // Either a dense vector or an opaque serialized embedding
+  oneof representation {
+    repeated float values = 1;   // length typically equals context_dim
+    bytes blob = 2;              // e.g., compressed representation
+  }
+  int32 dim = 3;                 // dimensionality when using values
+  google.protobuf.Duration valid_for = 4; // TTL for reuse
+}
+
+// Toggle set mirrors README features (masked prediction, attention, etc.)
+message FeatureToggles {
+  bool masked_prediction = 1;
+  bool adaptive_gating = 2;
+  bool cross_modal_attention = 3;
+  bool multi_scale = 4;
+  bool memory_efficient = 5;
+  bool inference_speedup = 6;
+  bool noise_robustness = 7;
+  bool advanced_wer = 8;
+  bool latency_profiling = 9;
+}
+
+// Fusion strategies
+enum FusionType {
+  FUSION_TYPE_UNSPECIFIED = 0;
+  DEEP = 1;
+  ADAPTIVE_GATED = 2;
+  CROSS_MODAL_ATTENTION = 3;
+  FILM = 4;
+  MOE = 5;
+}
+
+// Runtime configuration pushed from client/admin
+message RuntimeConfig {
+  AudioFormat audio_format = 1;
+  FeatureToggles toggles = 2;
+  FusionType fusion = 3;
+  map<string, google.protobuf.Value> extra = 10; // free-form options
+}
+
+// Transcript hypothesis
+message Hypothesis {
+  string text = 1;
+  float score = 2;  // log-prob or confidence
+}
+
+// Latency and throughput stats
+message ProfilingMetrics {
+  google.protobuf.Duration end_to_end_latency = 1;
+  google.protobuf.Duration model_latency = 2;
+  float rtf = 3; // real-time factor
+  uint64 tokens_per_second = 4;
+  uint64 memory_bytes = 5;
+}
+
+
