@@ -1,19 +1,33 @@
-import torch
+"""Training script for the fusion model.
+
+This script handles the training of the complete ASR system with context fusion.
+It uses the base trainer class and implements ASR-specific training logic.
+"""
+
 import hydra
 from omegaconf import DictConfig
-from pathlib import Path
+import torch
 from torch.utils.data import DataLoader
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import LinearLR
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
-import wandb
-from tqdm import tqdm
+import numpy as np
 
 from src.models.context_encoder import ContextEncoder
-from src.models.fusion_layer import DeepFusionLayer
+from src.models.fusion_layer import (
+    DeepFusionLayer,
+    AdaptiveGatedFusion,
+    CrossModalAttentionFusion,
+    FiLMFusion,
+    MoEGatedFusion,
+)
 from src.data.dataset import ContextualSpeechDataset
+from src.utils.config import Config, load_config
+from src.utils.logger import ExperimentLogger
+from src.utils.metrics import ASRMetricsTracker
+from src.training.trainer import BaseTrainer
 
 class ContextEnhancedASR(torch.nn.Module):
+    """Complete ASR model with context enhancement."""
+    
     def __init__(
         self,
         asr_model: Wav2Vec2ForCTC,
@@ -51,153 +65,241 @@ class ContextEnhancedASR(torch.nn.Module):
         
         return logits
 
+class ASRTrainer(BaseTrainer):
+    """Trainer class for ASR with context fusion."""
+    
+    def __init__(
+        self,
+        model: ContextEnhancedASR,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        optimizer: torch.optim.Optimizer,
+        scheduler: torch.optim.lr_scheduler._LRScheduler,
+        processor: Wav2Vec2Processor,
+        config: Config,
+        logger: ExperimentLogger,
+    ):
+        super().__init__(
+            model, train_loader, val_loader,
+            optimizer, scheduler, config, logger
+        )
+        self.processor = processor
+        self.metrics = ASRMetricsTracker()
+        
+    def training_step(self, batch):
+        # Forward pass
+        logits = self.model(
+            speech=batch['speech'],
+            context=batch['context'],
+            attention_mask=torch.ones_like(batch['speech'])
+        )
+        
+        # Compute CTC loss
+        labels = self.processor(
+            batch['speech_path'],
+            return_tensors="pt"
+        ).input_ids.to(self.device)
+        
+        loss = torch.nn.functional.ctc_loss(
+            logits.transpose(0, 1),
+            labels,
+            torch.full((logits.size(0),), logits.size(1)),
+            torch.full((labels.size(0),), labels.size(1)),
+        )
+        
+        # Compute predictions
+        predicted_ids = torch.argmax(logits, dim=-1)
+        predictions = self.processor.batch_decode(predicted_ids)
+        references = self.processor.batch_decode(labels)
+        
+        # Update metrics
+        self.metrics.update_transcriptions(predictions, references)
+        metrics = self.metrics.get_current()
+        metrics['loss'] = loss.item()
+        
+        return loss, metrics
+        
+    def validation_step(self, batch):
+        # Forward pass
+        logits = self.model(
+            speech=batch['speech'],
+            context=batch['context'],
+            attention_mask=torch.ones_like(batch['speech'])
+        )
+        
+        # Compute loss
+        labels = self.processor(
+            batch['speech_path'],
+            return_tensors="pt"
+        ).input_ids.to(self.device)
+        
+        loss = torch.nn.functional.ctc_loss(
+            logits.transpose(0, 1),
+            labels,
+            torch.full((logits.size(0),), logits.size(1)),
+            torch.full((labels.size(0),), labels.size(1)),
+        )
+        
+        # Compute predictions
+        predicted_ids = torch.argmax(logits, dim=-1)
+        predictions = self.processor.batch_decode(predicted_ids)
+        references = self.processor.batch_decode(labels)
+        
+        # Update metrics
+        self.metrics.update_transcriptions(predictions, references)
+        metrics = self.metrics.get_current()
+        metrics['loss'] = loss.item()
+        
+        return metrics
+
 @hydra.main(config_path="../../configs", config_name="default")
 def train(cfg: DictConfig):
-    # Initialize wandb
-    wandb.init(project="asr-context", config=dict(cfg))
+    # Load configuration
+    config = load_config(cfg)
     
-    # Load pre-trained ASR model and processor
-    asr_model = Wav2Vec2ForCTC.from_pretrained(cfg.model.asr.pretrained)
-    processor = Wav2Vec2Processor.from_pretrained(cfg.model.asr.pretrained)
+    # Initialize logger
+    logger = ExperimentLogger(
+        exp_name="asr_fusion",
+        config=dict(cfg)
+    )
     
-    if cfg.model.asr.freeze_encoder:
+    # Set random seeds
+    torch.manual_seed(config.seed)
+    np.random.seed(config.seed)
+    
+    # Load models
+    asr_model = Wav2Vec2ForCTC.from_pretrained(config.model.asr.pretrained)
+    processor = Wav2Vec2Processor.from_pretrained(config.model.asr.pretrained)
+    
+    if config.model.asr.freeze_encoder:
         for param in asr_model.wav2vec2.parameters():
             param.requires_grad = False
     
-    # Load pre-trained context encoder
+    # Load context encoder
     context_encoder = ContextEncoder(
-        input_channels=cfg.model.context_encoder.input_channels,
-        hidden_dim=cfg.model.context_encoder.hidden_dim,
-        num_layers=cfg.model.context_encoder.num_layers,
-        kernel_size=cfg.model.context_encoder.kernel_size,
-        stride=cfg.model.context_encoder.stride,
-        context_dim=cfg.model.context_encoder.context_dim,
+        input_channels=config.model.context_encoder.input_channels,
+        hidden_dim=config.model.context_encoder.hidden_dim,
+        num_layers=config.model.context_encoder.num_layers,
+        kernel_size=config.model.context_encoder.kernel_size,
+        stride=config.model.context_encoder.stride,
+        context_dim=config.model.context_encoder.context_dim,
     )
     
+    # Load pre-trained weights
     checkpoint = torch.load("checkpoints/context_encoder_best.pt")
     context_encoder.load_state_dict(checkpoint["model_state_dict"])
-    context_encoder.eval()  # Freeze context encoder
+    context_encoder.eval()
     
-    # Create fusion layer
-    fusion_layer = DeepFusionLayer(
-        asr_hidden_dim=asr_model.config.hidden_size,
-        context_dim=cfg.model.context_encoder.context_dim,
-        hidden_dim=cfg.model.fusion.hidden_dim,
-        num_layers=cfg.model.fusion.num_layers,
-        dropout=cfg.model.fusion.dropout,
-    )
+    # Create fusion layer according to config
+    fusion_type = getattr(config.model.fusion, 'type', 'deep')
+    if fusion_type == 'deep':
+        fusion_layer = DeepFusionLayer(
+            asr_hidden_dim=asr_model.config.hidden_size,
+            context_dim=config.model.context_encoder.context_dim,
+            hidden_dim=config.model.fusion.hidden_dim,
+            num_layers=config.model.fusion.num_layers,
+            dropout=config.model.fusion.dropout,
+        )
+    elif fusion_type == 'adaptive_gated':
+        fusion_layer = AdaptiveGatedFusion(
+            asr_hidden_dim=asr_model.config.hidden_size,
+            context_dim=config.model.context_encoder.context_dim,
+            dropout=config.model.fusion.dropout,
+        )
+    elif fusion_type == 'cross_modal_attention':
+        fusion_layer = CrossModalAttentionFusion(
+            asr_hidden_dim=asr_model.config.hidden_size,
+            context_dim=config.model.context_encoder.context_dim,
+            num_heads=getattr(config.model.fusion, 'num_heads', 8),
+            dropout=config.model.fusion.dropout,
+        )
+    elif fusion_type == 'film':
+        fusion_layer = FiLMFusion(
+            asr_hidden_dim=asr_model.config.hidden_size,
+            context_dim=config.model.context_encoder.context_dim,
+            dropout=config.model.fusion.dropout,
+        )
+    elif fusion_type == 'moe':
+        fusion_layer = MoEGatedFusion(
+            asr_hidden_dim=asr_model.config.hidden_size,
+            context_dim=config.model.context_encoder.context_dim,
+            num_experts=getattr(config.model.fusion, 'num_experts', 4),
+            dropout=config.model.fusion.dropout,
+        )
+    else:
+        raise ValueError(f"Unsupported fusion type: {fusion_type}")
     
     # Create combined model
     model = ContextEnhancedASR(asr_model, context_encoder, fusion_layer)
     
-    if torch.cuda.is_available():
-        model = model.cuda()
-        
-    # Create dataset and dataloader
-    dataset = ContextualSpeechDataset(
-        speech_dir=cfg.data.librispeech.train_clean_100,
-        context_dir=cfg.data.context.path,
-        sampling_rate=cfg.data.context.sampling_rate,
-        max_duration=cfg.data.librispeech.max_duration,
-        context_duration=cfg.data.context.clip_duration,
+    # Create datasets
+    train_dataset = ContextualSpeechDataset(
+        speech_dir=config.data.train_path,
+        context_dir=config.data.noise_path,
+        sampling_rate=config.data.sampling_rate,
+        max_duration=config.data.max_duration,
+        context_duration=config.data.context_duration,
     )
     
-    dataloader = DataLoader(
-        dataset,
-        batch_size=cfg.training.fusion.batch_size,
+    val_dataset = ContextualSpeechDataset(
+        speech_dir=config.data.val_path,
+        context_dir=config.data.noise_path,
+        sampling_rate=config.data.sampling_rate,
+        max_duration=config.data.max_duration,
+        context_duration=config.data.context_duration,
+    )
+    
+    # Create dataloaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.training.batch_size,
         shuffle=True,
         num_workers=4,
         pin_memory=True,
     )
     
-    # Create optimizer and scheduler
-    optimizer = AdamW(
-        model.parameters(),
-        lr=cfg.training.fusion.learning_rate,
-        weight_decay=0.01,
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config.training.batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
     )
     
-    scheduler = LinearLR(
+    # Create optimizer
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.training.learning_rate,
+        weight_decay=config.training.weight_decay,
+    )
+    
+    # Create scheduler
+    scheduler = torch.optim.lr_scheduler.LinearLR(
         optimizer,
         start_factor=1.0,
         end_factor=0.0,
-        total_iters=cfg.training.fusion.num_epochs * len(dataloader),
+        total_iters=config.training.num_epochs * len(train_loader),
     )
     
-    # Training loop
-    best_loss = float('inf')
-    for epoch in range(cfg.training.fusion.num_epochs):
-        model.train()
-        total_loss = 0
-        
-        with tqdm(dataloader, desc=f"Epoch {epoch+1}") as pbar:
-            for batch in pbar:
-                # Move batch to device
-                speech = batch["speech"].cuda() if torch.cuda.is_available() else batch["speech"]
-                context = batch["context"].cuda() if torch.cuda.is_available() else batch["context"]
-                
-                # Compute attention mask
-                attention_mask = torch.ones_like(speech)
-                
-                # Forward pass
-                logits = model(speech, context, attention_mask)
-                
-                # Compute CTC loss
-                labels = processor(batch["speech_path"], return_tensors="pt").input_ids
-                if torch.cuda.is_available():
-                    labels = labels.cuda()
-                
-                loss = torch.nn.functional.ctc_loss(
-                    logits.transpose(0, 1),
-                    labels,
-                    torch.full((logits.size(0),), logits.size(1)),
-                    torch.full((labels.size(0),), labels.size(1)),
-                )
-                
-                # Backward pass
-                optimizer.zero_grad()
-                loss.backward()
-                
-                # Gradient clipping
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(),
-                    cfg.training.fusion.gradient_clip,
-                )
-                
-                optimizer.step()
-                scheduler.step()
-                
-                # Update metrics
-                total_loss += loss.item()
-                pbar.set_postfix({"loss": loss.item()})
-                
-                # Log to wandb
-                wandb.log({
-                    "train_loss": loss.item(),
-                    "learning_rate": scheduler.get_last_lr()[0],
-                })
-                
-        # Compute epoch metrics
-        avg_loss = total_loss / len(dataloader)
-        print(f"Epoch {epoch+1} - Average Loss: {avg_loss:.4f}")
-        
-        # Save checkpoint if best loss
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            checkpoint_path = Path("checkpoints") / "fusion_model_best.pt"
-            checkpoint_path.parent.mkdir(exist_ok=True)
-            
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "loss": best_loss,
-                "config": dict(cfg),
-            }, checkpoint_path)
-            
-            print(f"Saved best model checkpoint to {checkpoint_path}")
-            
-    wandb.finish()
+    # Create trainer
+    trainer = ASRTrainer(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        processor=processor,
+        config=config,
+        logger=logger,
+    )
+    
+    # Start training
+    trainer.train(
+        num_epochs=config.training.num_epochs,
+        resume_from=None,  # Specify checkpoint path to resume training
+    )
+    
+    logger.finish()
 
 if __name__ == "__main__":
     train()

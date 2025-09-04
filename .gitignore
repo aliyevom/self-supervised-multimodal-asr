@@ -45,3 +45,5 @@ protos/**/gen/
 # Logs
 *.log
 .DS_Store
+
+tmp.txt

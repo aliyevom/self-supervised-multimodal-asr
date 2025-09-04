@@ -28,6 +28,9 @@ model:
     hidden_dim: 256
     num_layers: 2
     dropout: 0.1
+    type: deep  # options: deep, adaptive_gated, cross_modal_attention, film, moe
+    num_heads: 8
+    num_experts: 4
 
 training:
   context_encoder:
