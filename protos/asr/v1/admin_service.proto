@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package asr.v1;
+
+option java_multiple_files = true;
+option java_package = "com.example.asr.v1";
+option go_package = "github.com/example/asr/protos/asr/v1;asrv1";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+import "asr/v1/common.proto";
+
+service AdminService {
+  rpc Health(google.protobuf.Empty) returns (HealthResponse);
+  rpc GetConfig(google.protobuf.Empty) returns (GetConfigResponse);
+  rpc UpdateConfig(UpdateConfigRequest) returns (UpdateConfigResponse);
+  rpc LoadCheckpoint(LoadCheckpointRequest) returns (Status);
+  rpc GetProfiling(google.protobuf.Empty) returns (ProfilingSnapshot);
+}
+
+message HealthResponse {
+  Status status = 1;
+  string version = 2;
+  string device = 3;
+}
+
+message GetConfigResponse {
+  RuntimeConfig default_runtime = 1;
+  google.protobuf.Struct train_config = 2;
+}
+
+message UpdateConfigRequest {
+  RuntimeConfig runtime_overrides = 1;
+}
+
+message UpdateConfigResponse {
+  Status status = 1;
+  RuntimeConfig effective_runtime = 2;
+}
+
+message LoadCheckpointRequest {
+  string context_encoder_path = 1;
+  string fusion_type = 2;
+}
+
+message ProfilingSnapshot {
+  Status status = 1;
+  ProfilingMetrics aggregate = 2;
+  map<string, ProfilingMetrics> per_stage = 3;
+}
+
+

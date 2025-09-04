@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package asr.v1;
+
+option java_multiple_files = true;
+option java_package = "com.example.asr.v1";
+option go_package = "github.com/example/asr/protos/asr/v1;asrv1";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "asr/v1/common.proto";
+
+service ASRService {
+  rpc StreamingRecognize(stream StreamingRecognizeRequest) returns (stream StreamingRecognizeResponse);
+  rpc Recognize(RecognizeRequest) returns (RecognizeResponse);
+}
+
+message StreamingRecognizeRequest {
+  oneof payload {
+    RuntimeConfig config = 1;
+    AudioChunk speech = 2;
+    ContextChunk context = 3;
+    ContextVector context_vector = 4;
+  }
+}
+
+message PartialTranscript {
+  uint64 start_frame = 1;
+  uint64 end_frame = 2;
+  string text = 3;
+}
+
+message StreamingRecognizeResponse {
+  oneof payload {
+    PartialTranscript interim = 1;
+    Hypothesis final = 2;
+    ProfilingMetrics metrics = 3;
+    Status status = 4;
+  }
+}
+
+message RecognizeRequest {
+  RuntimeConfig config = 1;
+  bytes speech_audio = 2;
+  ContextVector context_vector = 3;
+  bytes context_audio = 4;
+}
+
+message RecognizeResponse {
+  Status status = 1;
+  Hypothesis hypothesis = 2;
+  ProfilingMetrics metrics = 3;
+}
+
+
